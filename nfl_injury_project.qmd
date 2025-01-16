@@ -1,0 +1,869 @@
+---
+title: "The Injury Report"
+author: "Sam Queralt, slq222"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(rvest)
+library(stringr)
+library(ggplot2)
+library(kableExtra)
+library(grid)
+library(gridExtra)
+```
+
+```{r, include = FALSE, cache = TRUE}
+# Combine results since 2000
+
+links = c()
+
+for (i in 0:22){
+  links = c(links, paste("https://www.pro-football-reference.com/draft/20", 
+                         formatC(i, digits = 0, width = 2, flag="0"),
+                         "-combine.htm", sep=""))
+}
+
+combine_total = links[1] %>% read_html() %>%
+  html_nodes("table") %>%
+  html_table() %>%
+  as.data.frame() %>%
+  dplyr::select(-College)
+
+for (i in 2:(length(links) - 1)){
+  combine_temp = links[i] %>% read_html() %>%
+    html_nodes("table") %>%
+    html_table() %>%
+    as.data.frame() %>%
+    dplyr::select(-College)
+  
+  combine_total = rbind(combine_total, combine_temp)
+}
+
+colnames(combine_total)[1] = "Player"
+
+combine_total[c("Draft Team", "Round", "Pick", "Draft Year")] <-
+  str_split_fixed(combine_total$Drafted..tm.rnd.yr., ' / ', 4)
+
+combine_total = combine_total %>%
+  mutate(Ht = round(as.numeric(str_extract(Ht, "^[0-9]+")) + 
+                      (as.numeric(str_extract(Ht, "[0-9]+$")) / 12), digits = 2),
+         Wt = as.numeric(Wt),
+         `40` = as.numeric(X40yd),
+         Vert = as.numeric(Vertical),
+         Bench = as.numeric(Bench),
+         Broad = as.numeric(Broad.Jump),
+         `3 Cone` = as.numeric(X3Cone),
+         Shut = as.numeric(Shuttle),
+         Round = as.numeric(str_extract(Round, "[0-9]+")),
+         Pick = as.numeric(str_extract(Pick, "[0-9]+")),
+         Year = as.numeric(`Draft Year`)) %>%
+  dplyr::select(Player, Pos, School, Ht, Wt, `40`, Vert, Bench, Broad, 
+         `3 Cone`, Shut, `Draft Team`, Round, Pick, Year)
+
+combine_total %>%
+  arrange(Player)
+```
+
+```{r, include = FALSE, cache = TRUE}
+# More Comprehesive Injury Research
+
+# Link Building
+links_injuries = c()
+for (i in seq(from = 10700, to = 14225, by =25)){
+  links_injuries = c(links_injuries, 
+                     paste0("https://www.prosportstransactions.com/football/Search/SearchResults.php?Player=&Team=&BeginDate=&EndDate=&InjuriesChkBx=yes&submit=Search&start=", i))
+}
+```
+
+```{r, include = FALSE, cache = TRUE}
+# Dataset Building
+
+lower_body = "(knee|ankle|hamstring|groin|foot|hip|ACL|calf|MCL|quadricep|quad|thigh|toe|Achilles)"
+
+injuries_all = read_html("https://www.prosportstransactions.com/football/Search/SearchResults.php?Player=&Team=&BeginDate=&EndDate=&InjuriesChkBx=yes&submit=Search&start=10675") %>%
+  html_nodes("table") %>%
+  "[" (1) %>%
+  html_table(header = TRUE) %>%
+  as.data.frame() 
+
+injuries_all = injuries_all %>%
+  mutate(Injury = str_extract(injuries_all$Notes, lower_body)) %>%
+  filter(!is.na(Injury)) 
+
+injuries_all = injuries_all %>%
+  mutate(Player = str_extract(injuries_all$Relinquished, "[a-zA-Z-\\.\\' ]+")) %>%
+  dplyr::select(Date, Team, Injury, Player) 
+
+for (i in 1:(length(links_injuries) - 1)){
+  injuries_temp = read_html(links_injuries[i]) %>%
+    html_nodes("table") %>%
+    "[" (1) %>%
+    html_table(header = TRUE) %>%
+    as.data.frame()
+  
+  injuries_temp = injuries_temp %>%
+    mutate(Injury = str_extract(injuries_temp$Notes, lower_body)) %>%
+    filter(!is.na(Injury))
+  
+  injuries_temp = injuries_temp %>%
+    mutate(Player = str_extract(injuries_temp$Relinquished, "[a-zA-Z-\\.\\' ]+")) %>%
+    dplyr::select(Date, Team, Injury, Player)
+  
+  injuries_all = rbind(injuries_all, injuries_temp)
+}
+
+injuries_all = injuries_all %>%
+  mutate(Player = str_squish(Player))
+
+injuries_all$Team[injuries_all$Team == "Redskins"] = "Washington"
+
+injuries_all %>%
+  arrange(Player)
+# (orlando) ryan anderson refuses to be conquered by my regex
+```
+
+```{r, include = FALSE, cache = TRUE}
+# Joining
+
+full_injury_combine = injuries_all %>%
+  inner_join(combine_total, by = "Player")
+
+full_injury_combine %>%
+  arrange(Player)
+```
+
+```{r, include = FALSE, cache = TRUE}
+# the mean players
+
+positions = combine_total %>%
+  distinct(Pos) %>% 
+  filter(Pos != "Pos") %>%
+  unlist(use.names = FALSE)
+
+average_pos = combine_total %>%
+  filter(Pos == positions[1]) %>%
+  dplyr::select(Ht, Wt, `40`, Vert, Bench, Broad, `3 Cone`, Shut) %>%
+  summarize(Ht = mean(Ht, na.rm = TRUE), 
+            Wt = mean(Wt, na.rm = TRUE), 
+            `40` = mean(`40`, na.rm = TRUE), 
+            Vert = mean(Vert, na.rm = TRUE), 
+            Bench = mean(Bench, na.rm = TRUE), 
+            Broad = mean(Broad, na.rm = TRUE), 
+            `3 Cone` = mean(`3 Cone`, na.rm = TRUE), 
+            Shut = mean(Shut, na.rm = TRUE)) %>%
+  mutate(Pos = positions[1])
+
+for (i in 2:length(positions)){
+  temp = combine_total %>%
+    filter(Pos == positions[i]) %>%
+    dplyr::select(Ht, Wt, `40`, Vert, Bench, Broad, `3 Cone`, Shut) %>%
+    summarize(Ht = mean(Ht, na.rm = TRUE), 
+              Wt = mean(Wt, na.rm = TRUE), 
+              `40` = mean(`40`, na.rm = TRUE), 
+              Vert = mean(Vert, na.rm = TRUE), 
+              Bench = mean(Bench, na.rm = TRUE), 
+              Broad = mean(Broad, na.rm = TRUE), 
+              `3 Cone` = mean(`3 Cone`, na.rm = TRUE), 
+              Shut = mean(Shut, na.rm = TRUE)) %>%
+    mutate(Pos = positions[i])
+  
+  average_pos = average_pos %>%
+    rbind(temp)
+}
+```
+
+```{r, include = FALSE, cache = TRUE}
+# The median players
+
+positions = combine_total %>%
+  distinct(Pos) %>% 
+  filter(Pos != "Pos") %>%
+  unlist(use.names = FALSE)
+
+combine_total %>%
+  filter(Pos == positions[1])
+
+median_pos = combine_total %>%
+  filter(Pos == positions[1]) %>%
+  dplyr::select(Ht, Wt, `40`, Vert, Bench, Broad, `3 Cone`, Shut) %>%
+  summarize(Ht = median(Ht, na.rm = TRUE), 
+            Wt = median(Wt, na.rm = TRUE), 
+            `40` = median(`40`, na.rm = TRUE), 
+            Vert = median(Vert, na.rm = TRUE), 
+            Bench = median(Bench, na.rm = TRUE), 
+            Broad = median(Broad, na.rm = TRUE), 
+            `3 Cone` = median(`3 Cone`, na.rm = TRUE), 
+            Shut = median(Shut, na.rm = TRUE)) %>%
+  mutate(Pos = positions[1])
+
+for (i in 2:length(positions)){
+  temp = combine_total %>%
+    filter(Pos == positions[i]) %>%
+    dplyr::select(Ht, Wt, `40`, Vert, Bench, Broad, `3 Cone`, Shut) %>%
+    summarize(Ht = median(Ht, na.rm = TRUE), 
+              Wt = median(Wt, na.rm = TRUE), 
+              `40` = median(`40`, na.rm = TRUE), 
+              Vert = median(Vert, na.rm = TRUE), 
+              Bench = median(Bench, na.rm = TRUE), 
+              Broad = median(Broad, na.rm = TRUE), 
+              `3 Cone` = median(`3 Cone`, na.rm = TRUE), 
+              Shut = median(Shut, na.rm = TRUE)) %>%
+    mutate(Pos = positions[i])
+  
+  median_pos = median_pos %>%
+    rbind(temp)
+}
+```
+
+```{r, include = FALSE, cache = TRUE}
+## Mean/sd players uninjured
+
+distinct_knee = full_injury_combine %>%
+  filter(Injury == "knee") %>%
+  distinct(Player, .keep_all = TRUE)
+
+un_injured = combine_total %>% anti_join(distinct_knee)
+
+# mean
+average_pos_uninjured = un_injured %>%
+  filter(Pos == positions[1]) %>%
+  dplyr::select(Ht, Wt, `40`, Vert, Bench, Broad, `3 Cone`, Shut) %>%
+  summarize(Ht = mean(Ht, na.rm = TRUE), 
+            Wt = mean(Wt, na.rm = TRUE), 
+            `40` = mean(`40`, na.rm = TRUE), 
+            Vert = mean(Vert, na.rm = TRUE), 
+            Bench = mean(Bench, na.rm = TRUE), 
+            Broad = mean(Broad, na.rm = TRUE), 
+            `3 Cone` = mean(`3 Cone`, na.rm = TRUE), 
+            Shut = mean(Shut, na.rm = TRUE)) %>%
+  mutate(Pos = positions[1])
+
+for (i in 2:length(positions)){
+  temp = un_injured %>%
+    filter(Pos == positions[i]) %>%
+    dplyr::select(Ht, Wt, `40`, Vert, Bench, Broad, `3 Cone`, Shut) %>%
+    summarize(Ht = mean(Ht, na.rm = TRUE), 
+              Wt = mean(Wt, na.rm = TRUE), 
+              `40` = mean(`40`, na.rm = TRUE), 
+              Vert = mean(Vert, na.rm = TRUE), 
+              Bench = mean(Bench, na.rm = TRUE), 
+              Broad = mean(Broad, na.rm = TRUE), 
+              `3 Cone` = mean(`3 Cone`, na.rm = TRUE), 
+              Shut = mean(Shut, na.rm = TRUE)) %>%
+    mutate(Pos = positions[i])
+  
+  average_pos_uninjured = average_pos_uninjured %>%
+    rbind(temp)
+}
+
+# sd
+sd_pos_uninjured = un_injured %>%
+  filter(Pos == positions[1]) %>%
+  dplyr::select(Ht, Wt, `40`, Vert, Bench, Broad, `3 Cone`, Shut) %>%
+  summarize(Ht = sd(Ht, na.rm = TRUE), 
+            Wt = sd(Wt, na.rm = TRUE), 
+            `40` = sd(`40`, na.rm = TRUE), 
+            Vert = sd(Vert, na.rm = TRUE), 
+            Bench = sd(Bench, na.rm = TRUE), 
+            Broad = sd(Broad, na.rm = TRUE), 
+            `3 Cone` = sd(`3 Cone`, na.rm = TRUE), 
+            Shut = sd(Shut, na.rm = TRUE)) %>%
+  mutate(Pos = positions[1])
+
+for (i in 2:length(positions)){
+  temp = un_injured %>%
+    filter(Pos == positions[i]) %>%
+    dplyr::select(Ht, Wt, `40`, Vert, Bench, Broad, `3 Cone`, Shut) %>%
+    summarize(Ht = sd(Ht, na.rm = TRUE), 
+              Wt = sd(Wt, na.rm = TRUE), 
+              `40` = sd(`40`, na.rm = TRUE), 
+              Vert = sd(Vert, na.rm = TRUE), 
+              Bench = sd(Bench, na.rm = TRUE), 
+              Broad = sd(Broad, na.rm = TRUE), 
+              `3 Cone` = sd(`3 Cone`, na.rm = TRUE), 
+              Shut = sd(Shut, na.rm = TRUE)) %>%
+    mutate(Pos = positions[i])
+  
+  sd_pos_uninjured = sd_pos_uninjured %>%
+    rbind(temp)
+}
+sd_pos_uninjured = sd_pos_uninjured %>%
+  summarize(Ht = mean(Ht, na.rm = TRUE), 
+            Wt = mean(Wt, na.rm = TRUE), 
+            `40` = mean(`40`, na.rm = TRUE), 
+            Vert = mean(Vert, na.rm = TRUE), 
+            Bench = mean(Bench, na.rm = TRUE), 
+            Broad = mean(Broad, na.rm = TRUE), 
+            `3 Cone` = mean(`3 Cone`, na.rm = TRUE), 
+            Shut = mean(Shut, na.rm = TRUE))
+```
+
+```{r, include = FALSE, cache = TRUE}
+# Knee injuries vs uninjured mean
+
+for (i in 1:nrow(distinct_knee)){
+  distinct_knee[i,]$Ht = distinct_knee[i,]$Ht - 
+                          average_pos_uninjured[average_pos_uninjured$Pos ==
+                                                  distinct_knee[i,]$Pos,]$Ht
+  distinct_knee[i,]$Wt = distinct_knee[i,]$Wt - 
+                          average_pos_uninjured[average_pos_uninjured$Pos == 
+                                        distinct_knee[i,]$Pos,]$Wt
+  distinct_knee[i,]$`40` = distinct_knee[i,]$`40` - 
+                          average_pos_uninjured[average_pos_uninjured$Pos == 
+                                        distinct_knee[i,]$Pos,]$`40`
+  distinct_knee[i,]$Vert = distinct_knee[i,]$Vert - 
+                          average_pos_uninjured[average_pos_uninjured$Pos == 
+                                        distinct_knee[i,]$Pos,]$Vert
+  distinct_knee[i,]$Bench = distinct_knee[i,]$Bench - 
+                          average_pos_uninjured[average_pos_uninjured$Pos == 
+                                        distinct_knee[i,]$Pos,]$Bench
+  distinct_knee[i,]$Broad = distinct_knee[i,]$Broad - 
+                          average_pos_uninjured[average_pos_uninjured$Pos == 
+                                        distinct_knee[i,]$Pos,]$Broad
+  distinct_knee[i,]$`3 Cone` = distinct_knee[i,]$`3 Cone` - 
+                          average_pos_uninjured[average_pos_uninjured$Pos == 
+                                        distinct_knee[i,]$Pos,]$`3 Cone`
+  distinct_knee[i,]$Shut = distinct_knee[i,]$Shut - 
+                          average_pos_uninjured[average_pos_uninjured$Pos == 
+                                        distinct_knee[i,]$Pos,]$Shut
+}
+```
+
+```{r, include = FALSE, cache = TRUE}
+## attempted Hypothesis Testing
+
+# H0: p1 = p2
+# HA: p1 != p2
+
+full_injury_combine %>%
+  filter(Injury == "knee") %>%
+  summarize(Pos) %>%
+  count(Pos) %>%
+  arrange(-n)
+
+un_injured_OT = un_injured %>%
+  filter(Pos == "OT")
+
+# most injured: OT, RB, WR, CB
+distinct_knee %>%
+  filter(Pos == "OT") %>%
+  ggplot() + 
+    geom_histogram(aes(x = Broad, y = ..density..), bins = 10) + 
+    geom_function(fun = dnorm, colour = "red", args = list(mean = mean(un_injured_OT$Broad), 
+                                                           sd = sd(un_injured_OT$Broad)))
+
+metric_list = c("Ht", "Wt", "40", "Vert", "Bench", "Broad", "3 Cone", "Shut")
+sig_level = .05
+
+
+```
+
+```{r, include = FALSE, cache = TRUE}
+# means for injured and uninjured (with sd) --- UNFINISHED
+
+# uninjured players
+tests = un_injured %>%
+  dplyr::select(-Player, -Pos, -School, -`Draft Team`,-Round, -Pick, -Year)
+
+x_bar_u = c(
+  tests[1] %>% summarize(Ht = mean(Ht, na.rm = TRUE)),
+  tests[2] %>% summarize(Wt = mean(Wt, na.rm = TRUE)),
+  tests[3] %>% summarize(`40` = mean(`40`, na.rm = TRUE)),
+  tests[4] %>% summarize(Vert = mean(Vert, na.rm = TRUE)),
+  tests[5] %>% summarize(Bench = mean(Bench, na.rm = TRUE)),
+  tests[6] %>% summarize(Broad = mean(Broad, na.rm = TRUE)),
+  tests[7] %>% summarize(`3 Cone` = mean(`3 Cone`, na.rm = TRUE)),
+  tests[8] %>% summarize(Shut = mean(Shut, na.rm = TRUE))
+)
+
+sample_s_u = c(
+  tests[1] %>% summarize(Ht = sd(Ht, na.rm = TRUE)),
+  tests[2] %>% summarize(Wt = sd(Wt, na.rm = TRUE)),
+  tests[3] %>% summarize(`40` = sd(`40`, na.rm = TRUE)),
+  tests[4] %>% summarize(Vert = sd(Vert, na.rm = TRUE)),
+  tests[5] %>% summarize(Bench = sd(Bench, na.rm = TRUE)),
+  tests[6] %>% summarize(Broad = sd(Broad, na.rm = TRUE)),
+  tests[7] %>% summarize(`3 Cone` = sd(`3 Cone`, na.rm = TRUE)),
+  tests[8] %>% summarize(Shut = sd(Shut, na.rm = TRUE))
+)
+
+# injured players
+tests = full_injury_combine %>%
+  filter(Injury == "knee") %>%
+  distinct(Player, .keep_all = TRUE) %>%
+  dplyr::select(-Date, -Team, -Player, -Injury, -Pos, -School, -`Draft Team`,-Round, -Pick, -Year)
+
+x_bar_i = c(
+  tests[1] %>% summarize(Ht = mean(Ht, na.rm = TRUE)),
+  tests[2] %>% summarize(Wt = mean(Wt, na.rm = TRUE)),
+  tests[3] %>% summarize(`40` = mean(`40`, na.rm = TRUE)),
+  tests[4] %>% summarize(Vert = mean(Vert, na.rm = TRUE)),
+  tests[5] %>% summarize(Bench = mean(Bench, na.rm = TRUE)),
+  tests[6] %>% summarize(Broad = mean(Broad, na.rm = TRUE)),
+  tests[7] %>% summarize(`3 Cone` = mean(`3 Cone`, na.rm = TRUE)),
+  tests[8] %>% summarize(Shut = mean(Shut, na.rm = TRUE))
+)
+
+sample_s_i = c(
+  tests[1] %>% summarize(Ht = sd(Ht, na.rm = TRUE)),
+  tests[2] %>% summarize(Wt = sd(Wt, na.rm = TRUE)),
+  tests[3] %>% summarize(`40` = sd(`40`, na.rm = TRUE)),
+  tests[4] %>% summarize(Vert = sd(Vert, na.rm = TRUE)),
+  tests[5] %>% summarize(Bench = sd(Bench, na.rm = TRUE)),
+  tests[6] %>% summarize(Broad = sd(Broad, na.rm = TRUE)),
+  tests[7] %>% summarize(`3 Cone` = sd(`3 Cone`, na.rm = TRUE)),
+  tests[8] %>% summarize(Shut = sd(Shut, na.rm = TRUE))
+)
+
+for (i in 1:ncol(tests)){
+  mu1 = x_bar_u[i]
+  mu2 = x_bar_i[i]
+  s1 = sample_s_u[i]
+  s2 = sample_s_i[i]
+  n1 = nrow(un_injured)
+  n2 = nrow(full_injury_combine %>% 
+              filter(Injury == "knee") %>% 
+              distinct(Player, .keep_all = TRUE))
+}
+
+```
+
+```{r, eval = FALSE, include = FALSE}
+## this is a section of text that I did not end up using in my project, but i wanted to save just in case
+
+Next, I used the original athleticism set and the injured athleticism set to construct 2 new sets that contained the mean for every test, faceted by position. These will help me built my null and alternative hypotheses.
+
+# ```{r, echo = FALSE}
+head(average_pos)
+head(average_pos_uninjured)
+# ```
+
+Finally, I filtered the injury data set to contain only players who had suffered knee injuries at least once. I then created a new set that represented each player's deviation from the uninjured mean in their athletic profile. For example, if a wide receiver (who had suffered a knee injury) ran a 40-yard dash in 4.3 seconds when the mean for his position is 4.51, he would score a -.21 in this category.
+
+# ```{r, echo = FALSE}
+head(distinct_knee)
+# ```
+```
+
+
+Football is the most popular sport in America, yielding an average of over 17 million viewers in each of its 272 regular season games. This number shoots up to over 38 million during the playoffs, peaking at about 100 million viewers for the Super Bowl! Despite its immense popularity in the United States and elsewhere, the safety of football players has always been a concern. The game is built on aggression and athleticism, which puts the players at risk of life-changing injuries. Lately, sports media has begun to shed light on the prevalence of injuries, specifically concussions, and the NFL has taken notice. Injuries pose a lose-lose situation for players and teams; if a player gets injured, it leaves his team vulnerable in his absence and puts his career in jeopardy. Aside from concussions, the most concerning injury in the NFL is the ACL tear. This type of knee injury is especially frightening for players because it is often a non-contact injury. Tearing one's ACL requires surgery and nearly a year of rehab with no guarantee that the player will ever be the same athlete they were before the injury. Being able to predict injuries like this would allow players to train in a way that decreases their chance of injury and teams to avoid players with a high risk of injury. Of course there are more variables than athletic testing (e.g. previous injury, genetic predisposition, turf and grass fields, etc.) that affect this research, but my hypothesis is that I can predict the amount of stress that a given player will put on their body using their athletic profile. For example, the 3 Cone Drill is a measure of a player's agility. I predict that more agile players will rely more on cutting and changing direction in their game. Because I believe that this would put more stress on their lower-body joints, I would predict these players will be more prone to injury. 
+
+## The Data
+The injury data was scraped from prosportstransactions.com. This data set contains the date, injury type, name, and team of player injury. I took injuries starting from December 29th, 2017. 
+
+The athleticism data was scraped from pro-football-reference.com. This data set contains the full NFL Combine results and draft position for every player that attended. I took players starting in 2000. 
+
+I combined these data sets to form a set that contained every player that had both injury and athleticism data. The resulting set contained 1809 entries with 733 unique players. 
+
+### Full Injury Set
+Some columns have been omitted for space
+```{r, echo = FALSE}
+full_injury_combine %>%
+  dplyr::select(Player, Pos, Ht,	Wt,	`40`,	Vert,	Bench, Broad,	`3 Cone`,	Shut, Injury) %>%
+  head() %>%
+  kable() %>%
+  kable_styling(full_width = FALSE) %>%
+  column_spec(1, bold = TRUE, border_right = TRUE, color = "white", background = "steelblue")
+
+```
+
+## Analysis
+
+This data is multifaceted and complicated. Millions of dollars are spent on research like this, so I do not expect to find any clear-cut, obvious evidence in my 'homemade' data. However, it is possible that I find some trend by simplifying the situation. I will use hypothesis testing to find if the differences between the injured and uninjured players are significant. I will report a p-value for each of the eight variables using the t-test.
+
+$$H_0: \mu_{uninjured} = \mu_{injured}$$
+$$H_a: \mu_{uninjured} \neq \mu_{injured}$$
+
+```{r, include = FALSE}
+knee_injured = full_injury_combine %>% 
+  filter(Injury == "knee") %>% 
+  distinct(Player, .keep_all = TRUE)
+
+p_values = data.frame(
+  Ht = t.test(un_injured$Ht, 
+         knee_injured$Ht)$p.value,
+  Wt = t.test(un_injured$Wt, 
+         knee_injured$Wt)$p.value,
+  `40` = t.test(un_injured$`40`, 
+         knee_injured$`40`)$p.value,
+  Vert = t.test(un_injured$Vert, 
+         knee_injured$Vert)$p.value,
+  Bench = t.test(un_injured$Bench, 
+         knee_injured$Bench)$p.value,
+  Broad = t.test(un_injured$Broad, 
+         knee_injured$Broad)$p.value,
+  `3 Cone` = t.test(un_injured$`3 Cone`, 
+         knee_injured$`3 Cone`)$p.value,
+  Shut = t.test(un_injured$Shut, 
+         knee_injured$Shut)$p.value
+)
+```
+
+```{r, echo = FALSE}
+row.names(p_values) = c("p-values")
+
+p_values %>%
+  head() %>%
+  kable(digits = 5) %>%
+  kable_styling(full_width = FALSE)
+```
+
+Using a significance level of .05, I have found that height, weight, and broad jump are statistically significant. To find out more, I will modify the above t-tests.
+
+```{r, include = FALSE}
+## height
+pg_ht = t.test(un_injured$Ht, 
+       knee_injured$Ht,
+       alternative = "greater")$p.value
+pl_ht = t.test(un_injured$Ht, 
+       knee_injured$Ht,
+       alternative = "less")$p.value
+
+# this indicates uninjured - injured < 0, thus injured are taller
+
+## weight
+pg_wt = t.test(un_injured$Wt, 
+       knee_injured$Wt,
+       alternative = "greater")$p.value
+pl_wt = t.test(un_injured$Wt, 
+       knee_injured$Wt,
+       alternative = "less")$p.value
+
+# this indicates uninjured - injured < 0, thus injured are heavier
+
+## broad
+pg_broad = t.test(un_injured$Broad, 
+       knee_injured$Broad,
+       alternative = "greater")$p.value
+pl_broad = t.test(un_injured$Broad, 
+       knee_injured$Broad,
+       alternative = "less")$p.value
+
+# this indicates uninjured - injured < 0, thus injured are have longer broad jumps
+
+p_table = matrix(c(pg_ht, pg_wt, pg_broad, pl_ht, pl_wt, pl_broad), 
+                 ncol=3, 
+                 byrow=TRUE)
+colnames(p_table) = c('Ht','Wt','Broad')
+rownames(p_table) = c('Greater','Less')
+p_table = as.table(p_table)
+```
+```{r, echo = FALSE}
+p_table %>%
+  kable(digits = 4) %>%
+  kable_styling(full_width = FALSE)
+```
+
+These t-tests indicate that the uninjured sample was shorter, lighter, and had shorter long jumps. In practice, this makes sense! Players that are taller and heavier put more weight (and thus, more stress) on their knees. The broad jump is an event in which the player jumps from a standstill, attempting to cover as much ground as possible. Since jumping is exercise that utilizes the knees (both on the jump and on the landing), it makes sense that players with shorter jumps would rely less on their knees during a game. According to my model, this makes them less injury prone.
+
+There is, however, a fundamental flaw in this testing. I did not discriminate by position. The reason analysis like this is so difficult in football is that there is a remarkable amount of variability in the body types and attributes of players. For example, the two positions that are responsible for the most knee injuries in my data set, wide receiver and offensive tackle, differ on average by about 5 inches (.4 feet) and 115 pounds, as shown below. Grouping these subsets of players together surely introduced bias into our analysis. 
+
+```{r, include = FALSE}
+knee_injured %>%
+  count(Pos) %>%
+  slice_max(order_by = n, n = 2)
+
+ot = combine_total %>%
+  filter(Pos == "OT") %>%
+  summarise(Ht = mean(Ht, na.rm = TRUE), Wt = mean(Wt, na.rm = TRUE))
+
+wr = combine_total %>%
+  filter(Pos == "WR") %>%
+  summarise(Ht = mean(Ht, na.rm = TRUE), Wt = mean(Wt, na.rm = TRUE))
+
+example = data.frame(rbind(OT = ot, WR = wr))
+```
+
+```{r, echo = FALSE}
+example %>%
+  kable(digits = 1) %>%
+  kable_styling(full_width = FALSE)
+```
+
+How should I fix this? My solution is simply to examine one position at a time. Since offensive tackle is the only position in my data set that contains more than 30 knee injuries, I will do a new set of t-tests on only these players.
+
+```{r, echo = FALSE}
+knee_injured_OT = full_injury_combine %>% 
+  filter(Injury == "knee", Pos == "OT") %>% 
+  distinct(Player, .keep_all = TRUE)
+
+un_injured_OT = un_injured %>%
+  filter(Pos == "OT")
+
+p_values_OT = data.frame(
+  Ht = t.test(un_injured_OT$Ht, 
+         knee_injured_OT$Ht)$p.value,
+  Wt = t.test(un_injured_OT$Wt, 
+         knee_injured_OT$Wt)$p.value,
+  `40` = t.test(un_injured_OT$`40`, 
+         knee_injured_OT$`40`)$p.value,
+  Vert = t.test(un_injured_OT$Vert, 
+         knee_injured_OT$Vert)$p.value,
+  Bench = t.test(un_injured_OT$Bench, 
+         knee_injured_OT$Bench)$p.value,
+  Broad = t.test(un_injured_OT$Broad, 
+         knee_injured_OT$Broad)$p.value,
+  `3 Cone` = t.test(un_injured_OT$`3 Cone`, 
+         knee_injured_OT$`3 Cone`)$p.value,
+  Shut = t.test(un_injured_OT$Shut, 
+         knee_injured_OT$Shut)$p.value
+)
+
+row.names(p_values_OT) = c("p-values")
+
+p_values_OT %>%
+  kable(digits = 4) %>%
+  kable_styling(full_width = FALSE)
+```
+
+When isolating offensive tackles, we get a very different picture! Height and weight no longer seem to be determining factors, while the 40-yard dash, vertical jump, and broad jump all are significant under a significance level of .05. Now we must again test the greater and less alternatives for these three categories.
+
+```{r, include = FALSE}
+## 40
+pg_40_ot = t.test(un_injured_OT$`40`, 
+       knee_injured_OT$`40`,
+       alternative = "greater")$p.value
+pl_40_ot = t.test(un_injured_OT$`40`, 
+       knee_injured_OT$`40`,
+       alternative = "less")$p.value
+
+# this indicates uninjured - injured > 0, thus injured have lower times (and are faster)
+
+## vert
+pg_vert_ot = t.test(un_injured_OT$Vert, 
+       knee_injured_OT$Vert,
+       alternative = "greater")$p.value
+pl_vert_ot = t.test(un_injured_OT$Vert, 
+       knee_injured_OT$Vert,
+       alternative = "less")$p.value
+
+# this indicates uninjured - injured < 0, thus injured are have a higher vertical jump
+
+## broad
+pg_broad_ot = t.test(un_injured_OT$Broad, 
+       knee_injured_OT$Broad,
+       alternative = "greater")$p.value
+pl_broad_ot = t.test(un_injured_OT$Broad, 
+       knee_injured_OT$Broad,
+       alternative = "less")$p.value
+
+# this indicates uninjured - injured < 0, thus injured are have longer broad jumps
+
+p_table = matrix(c(pg_40_ot, pg_vert_ot, pg_broad_ot, pl_40_ot, pl_vert_ot, pl_broad_ot), 
+                 ncol=3, 
+                 byrow=TRUE)
+colnames(p_table) = c('Ht','Wt','Broad')
+rownames(p_table) = c('Greater','Less')
+p_table = as.table(p_table)
+```
+
+```{r, echo = FALSE}
+p_table %>%
+  kable(digits = 4) %>%
+  kable_styling(full_width = FALSE)
+```
+
+
+These p-values indicate that the injured offensive tackles are faster and jump higher and farther than their healthy counterparts. Again, this makes practical sense! For background, one of the most difficult parts of being an offensive tack is the jump set, a technique that allows the lineman to settle into pass protection versus an oncoming defender. This requires, as the name implies, an explosive lateral jump as soon as the ball is snapped. Tackles that are able to use their jumping ability will do so to gain an advantage on these sets, but the stress on the knee increases when doing so, which I hypothesize leads to a greater risk of injury. The faster 40-yard dash times could be a result of faster lineman being more likely to get down the field (putting themselves in harms way), but this correlation is more perplexing.
+
+
+## Visualizations
+
+First, I will show the result of our first analysis graphically. This analysis was flawed because it averaged all the positions together. In the following graphs, the blue represents the healthy sample and the orange represents the injured sample.
+
+```{r, echo = FALSE, warning = FALSE, fig.width = 9}
+# height
+height_total_plot = ggplot() + 
+  ggtitle("Height") +
+  xlab("Height (ft)") +
+  geom_density(data = un_injured,
+               aes(Ht),
+               color = "steelblue",
+               fill = "steelblue",
+               alpha = .2) +
+  geom_density(data = knee_injured,
+               aes(Ht),
+               color = "coral",
+               fill = "coral",
+               alpha = .2) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank()) +
+  geom_segment(aes(x = mean(un_injured$Ht, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(un_injured$Ht, na.rm = TRUE), 
+                   yend = Inf),
+               color = "steelblue") +
+  geom_segment(aes(x = mean(knee_injured$Ht, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(knee_injured$Ht, na.rm = TRUE), 
+                   yend = Inf),
+               color = "coral")
+
+# weight
+weight_total_plot = ggplot() + 
+  ggtitle("Weight") +
+  xlab("Weight (lbs)") +
+  geom_density(data = un_injured,
+               aes(Wt),
+               color = "steelblue",
+               fill = "steelblue",
+               alpha = .2) +
+  geom_density(data = knee_injured,
+               aes(Wt),
+               color = "coral",
+               fill = "coral",
+               alpha = .2) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank()) +
+  geom_segment(aes(x = mean(un_injured$Wt, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(un_injured$Wt, na.rm = TRUE), 
+                   yend = Inf),
+               color = "steelblue") +
+  geom_segment(aes(x = mean(knee_injured$Wt, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(knee_injured$Wt, na.rm = TRUE), 
+                   yend = Inf),
+               color = "coral")
+
+# broad
+broad_total_plot = ggplot() + 
+  ggtitle("Broad Jump") +
+  xlab("Broad Jump (in)") + 
+  geom_density(data = un_injured,
+               aes(Broad),
+               color = "steelblue",
+               fill = "steelblue",
+               alpha = .2) +
+  geom_density(data = knee_injured,
+               aes(Broad),
+               color = "coral",
+               fill = "coral",
+               alpha = .2) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank()) +
+  geom_segment(aes(x = mean(un_injured$Broad, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(un_injured$Broad, na.rm = TRUE), 
+                   yend = Inf),
+               color = "steelblue") +
+  geom_segment(aes(x = mean(knee_injured$Broad, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(knee_injured$Broad, na.rm = TRUE), 
+                   yend = Inf),
+               color = "coral")
+
+grid.arrange(height_total_plot, weight_total_plot, broad_total_plot, 
+             ncol = 3)
+```
+
+As is seen clearly in the bimodal weight graph, the variance between positions has a large effect on the way the graphs look. The graphs that isolate the offensive tackle position will better reflect the p-values calculated above.
+
+```{r, echo = FALSE, warning = FALSE, fig.width = 9}
+# 40
+sprint_ot_plot = ggplot() + 
+  ggtitle("OT 40-Yard Dash Time") +
+  xlab("Time (s)") + 
+  geom_density(data = un_injured_OT,
+               aes(`40`),
+               color = "steelblue",
+               fill = "steelblue",
+               alpha = .2) +
+  geom_density(data = knee_injured_OT,
+               aes(`40`),
+               color = "coral",
+               fill = "coral",
+               alpha = .2) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank()) +
+  geom_segment(aes(x = mean(un_injured_OT$`40`, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(un_injured_OT$`40`, na.rm = TRUE), 
+                   yend = Inf),
+               color = "steelblue") +
+  geom_segment(aes(x = mean(knee_injured_OT$`40`, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(knee_injured_OT$`40`, na.rm = TRUE), 
+                   yend = Inf),
+               color = "coral")
+# vert
+vert_ot_plot = ggplot() + 
+  ggtitle("OT Vertical Jump") +
+  xlab("Vert (in)") + 
+  geom_density(data = un_injured_OT,
+               aes(Vert),
+               color = "steelblue",
+               fill = "steelblue",
+               alpha = .2) +
+  geom_density(data = knee_injured_OT,
+               aes(Vert),
+               color = "coral",
+               fill = "coral",
+               alpha = .2) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank()) +
+  geom_segment(aes(x = mean(un_injured_OT$Vert, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(un_injured_OT$Vert, na.rm = TRUE), 
+                   yend = Inf),
+               color = "steelblue") +
+  geom_segment(aes(x = mean(knee_injured_OT$Vert, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(knee_injured_OT$Vert, na.rm = TRUE), 
+                   yend = Inf),
+               color = "coral")
+
+# broad
+broad_ot_plot = ggplot() + 
+  ggtitle("OT Broad Jump") +
+  xlab("Broad Jump (in)") + 
+  geom_density(data = un_injured_OT,
+               aes(Broad),
+               color = "steelblue",
+               fill = "steelblue",
+               alpha = .2) +
+  geom_density(data = knee_injured_OT,
+               aes(Broad),
+               color = "coral",
+               fill = "coral",
+               alpha = .2) +
+  theme_bw() + 
+  theme(axis.title.y = element_blank()) +
+  geom_segment(aes(x = mean(un_injured_OT$Broad, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(un_injured_OT$Broad, na.rm = TRUE), 
+                   yend = Inf),
+               color = "steelblue") +
+  geom_segment(aes(x = mean(knee_injured_OT$Broad, na.rm = TRUE), 
+                   y = 0, 
+                   xend = mean(knee_injured_OT$Broad, na.rm = TRUE), 
+                   yend = Inf),
+               color = "coral")
+
+grid.arrange(sprint_ot_plot, vert_ot_plot, broad_ot_plot, 
+             ncol = 3)
+```
+
+## Conclusion
+In conclusion, I was able to find three predictors for knee injuries at a single position. Considering the work it took to get to this point, this seemingly insignificant result is easy to disregard. The data is daunting, yet sparse, and the variables are endless. However, I believe that my results are a step in the right direction. This is analysis that can save careers! By knowing the aspects of the game that put players at risk, measures can be made to protect the players from themselves. In the future, I plan to do more with this data. I want to keep adding onto the data sets I have created, and I want to further analyze the factors that lead to injury in the NFL. 
+
+### References
+__Viewing Data__: https://nflcommunications.com/Pages/2021-NFL-Regular-Season-Averaged-17.1-Million-Viewers.aspx
+
+__Viewing Data__: https://www.sportspromedia.com/news/nfl-playoffs-divisional-round-tv-ratings-viewership-cbs-fox-nbc
+
+__Athletic Testing Data__: pro-football-reference.com
+
+__Injury Data__: prosportstransactions.com
+
+
+
+
